@@ -4,7 +4,7 @@ VERSION="1.3"
 
 TARGET=$1
 
-WORKING_DIR=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
+WORKING_DIR="/opt/lazy_recon"
 TOOLS_PATH="$WORKING_DIR/tools"
 WORDLIST_PATH="$WORKING_DIR/wordlists"
 RESULTS_PATH="$WORKING_DIR/results/$TARGET"
@@ -14,6 +14,8 @@ IP_PATH="$RESULTS_PATH/ip"
 PSCAN_PATH="$RESULTS_PATH/portscan"
 SSHOT_PATH="$RESULTS_PATH/screenshot"
 DIR_PATH="$RESULTS_PATH/directory"
+SLURP_PATH="$RESULTS_PATH/slurp"
+SHODAN_PATH="$RESULTS_PATH/shodan"
 
 RED="\033[1;31m"
 GREEN="\033[1;32m"
@@ -52,13 +54,15 @@ setupDir(){
     echo -e "${GREEN}--==[ Setting things up ]==--${RESET}"
     echo -e "${RED}\n[+] Creating results directories...${RESET}"
     rm -rf $RESULTS_PATH
-    mkdir -p $SUB_PATH $CORS_PATH $IP_PATH $PSCAN_PATH $SSHOT_PATH $DIR_PATH
+    mkdir -p $SUB_PATH $CORS_PATH $IP_PATH $PSCAN_PATH $SSHOT_PATH $DIR_PATH $SLURP_PATH $SHODAN_PATH
     echo -e "${BLUE}[*] $SUB_PATH${RESET}"
     echo -e "${BLUE}[*] $CORS_PATH${RESET}"
     echo -e "${BLUE}[*] $IP_PATH${RESET}"
     echo -e "${BLUE}[*] $PSCAN_PATH${RESET}"
     echo -e "${BLUE}[*] $SSHOT_PATH${RESET}"
     echo -e "${BLUE}[*] $DIR_PATH${RESET}"
+    echo -e "${BLUE}[*] $SLURP_PATH${RESET}"
+    echo -e "${BLUE}[*] $SHODAN_PATH${RESET}"
 }
 
 
@@ -68,7 +72,8 @@ enumSubs(){
     ~/go/bin/amass -d $TARGET -o $SUB_PATH/amass.txt
 
     runBanner "subfinder"
-    ~/go/bin/subfinder -d $TARGET -t 50 -b -w $WORDLIST_PATH/dns_all.txt $TARGET -nW --silent -o $SUB_PATH/subfinder.txt
+    #~/go/bin/subfinder -w $WORDLIST_PATH/dns_all.txt -d $TARGET -t 50 -b  $TARGET -nW --silent -o $SUB_PATH/subfinder.txt
+    ~/go/bin/subfinder -w $WORDLIST_PATH/dns_10k.txt -d $TARGET -t 50 -b  $TARGET -nW --silent -o $SUB_PATH/subfinder.txt
 
     echo -e "${RED}\n[+] Combining subdomains...${RESET}"
     cat $SUB_PATH/*.txt | sort | awk '{print tolower($0)}' | uniq > $SUB_PATH/final-subdomains.txt
@@ -110,9 +115,12 @@ portScan(){
     echo -e "${BLUE}[*] Masscan Done! View the HTML report at $PSCAN_PATH/final-masscan.html${RESET}"
 
     runBanner "nmap"
-    sudo nmap -sVC -p $open_ports --open -v -T4 -Pn -iL $SUB_PATH/final-subdomains.txt -oX $PSCAN_PATH/nmap.xml
+    nmap -sVC -p $open_ports --open -v -T4 -Pn -iL $SUB_PATH/final-subdomains.txt -oX $PSCAN_PATH/nmap.xml
     xsltproc -o $PSCAN_PATH/final-nmap.html $PSCAN_PATH/nmap.xml
     echo -e "${BLUE}[*] Nmap Done! View the HTML report at $PSCAN_PATH/final-nmap.html${RESET}"
+
+    nmap --script http-git2 -p 80,443,8008,8080,8000,9000,5000 -Pn -iL $SUB_PATH/final-subdomains.txt -oX $RESULTS_PATH/nmap-git.xml
+    echo -e "${BLUE}[*] Nmap Done! View the HTML report at $RESULTS_PATH/nmap-git.xml${RESET}"
 }
 
 
@@ -131,7 +139,7 @@ bruteDir(){
     mkdir -p $DIR_PATH/dirsearch
     for url in $(cat $SSHOT_PATH/aquatone/aquatone_urls.txt); do
         fqdn=$(echo $url | sed -e 's;https\?://;;' | sed -e 's;/.*$;;')
-        $TOOLS_PATH/dirsearch/dirsearch.py -b -t 100 -e php,asp,aspx,jsp,html,zip,jar,sql -x 500,503 -r -w $WORDLIST_PATH/raft-large-words.txt -u $url --plain-text-report=$DIR_PATH/dirsearch/$fqdn.tmp
+        $TOOLS_PATH/dirsearch/dirsearch.py -b -t 100 -e php,asp,aspx,jsp,html,zip,jar,sql -x 500,503 -r -w $WORDLIST_PATH/fuzz.txt -u $url --plain-text-report=$DIR_PATH/dirsearch/$fqdn.tmp
         if [ ! -s $DIR_PATH/dirsearch/$fqdn.tmp ]; then
             rm $DIR_PATH/dirsearch/$fqdn.tmp
         else
@@ -140,6 +148,23 @@ bruteDir(){
         fi
     done
     echo -e "${BLUE}[*] Check the results at $DIR_PATH/dirsearch/${RESET}"
+}
+
+slurp(){
+    echo -e "${GREEN}\n--==[ slurp for S3 buckets ]==--${RESET}"
+    runBanner "slurp"
+    slurp domain --permutations /root/amass/permutations.json -t $TARGET 2>&1 |  grep -vi 'FORBIDDEN' > $SLURP_PATH/slurp.txt
+    echo -e "${BLUE}[*] Check the results at $SLURP_PATH/slurp.txt/${RESET}"
+}
+shodan(){
+    echo -e "${GREEN}\n--==[ executing shodan host search ]==--${RESET}"
+    runBanner "Shodan"
+    for $ip in $(cat $IP_PATH/final-ips.txt); do
+        /usr/local/bin/shodan host $ip >> $SHODAN_PATH/shodan.txt;
+        echo "\n====\n" >> $SHODAN_PATH/shodan.txt
+    done
+    
+    echo -e "${BLUE}[*] Check the results at $SHODAN_PATH/shodan.txt${RESET}"
 }
 
 
@@ -153,5 +178,7 @@ enumIPs
 portScan
 visualRecon
 bruteDir
+# slurp
+# shodan
 
 echo -e "${GREEN}\n--==[ DONE ]==--${RESET}"
